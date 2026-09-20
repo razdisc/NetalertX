@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# NetAlertX Debian 13 / Proxmox LXC installer - v3.0.2
+# NetAlertX Debian 13 / Proxmox LXC installer - v3.0.3
 # Fresh-install script. Lifecycle operations are provided by netalertxctl.
 
 REPO="https://github.com/netalertx/NetAlertX.git"
@@ -36,7 +36,7 @@ source /etc/os-release
 if [[ "${NETALERTX_ASSUME_YES:-0}" != 1 ]]; then
   cat <<WARN
 ============================================================
-NetAlertX Debian 13 / Proxmox LXC installer v3.0.2
+NetAlertX Debian 13 / Proxmox LXC installer v3.0.3
 Target: ${NETALERTX_REF}
 
 FRESH INSTALL ONLY.
@@ -237,13 +237,13 @@ server {
 EOF_NGINX
 ln -sfn "$NGINX_CONF" "$NGINX_LINK"
 
-cat > "$START_SCRIPT" <<EOF_START
+cat > "$START_SCRIPT" <<'EOF_START'
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-VENV="${VENV_DIR}"
+VENV="/opt/netalertx/venv"
 source "$VENV/bin/activate"
-export PATH="$VENV/bin:\$PATH"
+export PATH="$VENV/bin:$PATH"
 export VIRTUAL_ENV="$VENV"
 export PYTHONPATH=/app
 export PYTHONUNBUFFERED=1
@@ -322,7 +322,7 @@ cat > "$ETC_DIR/netalertx.env" <<EOF_STATE
 NETALERTX_REF='${NETALERTX_REF}'
 NETALERTX_COMMIT='${COMMIT}'
 NETALERTX_TAG='${TAG}'
-INSTALLER_VERSION='3.0.2'
+INSTALLER_VERSION='3.0.3'
 PORT='${PORT}'
 GRAPHQL_PORT='${GRAPHQL_PORT}'
 EOF_STATE
@@ -363,7 +363,7 @@ IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src
 IP="${IP:-$(hostname -I | awk '{print $1}')}"
 cat <<DONE
 ============================================================
-NetAlertX v3.0.2 installed
+NetAlertX v3.0.3 installed
 Release: ${NETALERTX_REF}
 Commit:  ${COMMIT}
 Web UI:  http://${IP}:${PORT}
