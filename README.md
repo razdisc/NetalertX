@@ -55,25 +55,76 @@ Default: **v26.9.0** (`a686a01` on the current GitHub release page). v26.9.0 is 
 
 ## Install
 
-On a fresh Debian 13 LXC:
-1. Clone repo first
-```bash
-# SSH (recommended)
-git clone git@github.com:razdisc/NetalertX.git
+The recommended workflow is to prepare the fresh Debian 13 LXC, update Debian, clone this repository, and then run the installer.
 
-# OR HTTPS with a GitHub Personal Access Token
-git clone https://github.com/razdisc/NetalertX.git
+### 1. Update Debian
+
+Run these commands inside the fresh LXC:
+
+```bash
+apt update
+apt full-upgrade -y
+apt install -y git ca-certificates
 ```
+
+Reboot if Debian/kernel updates request it:
+
+```bash
+reboot
+```
+
+After reconnecting, confirm the OS:
+
+```bash
+cat /etc/os-release
+```
+
+This project targets **Debian 13 (Trixie)**.
+
+### 2. Clone this repository
+
+Replace `<YOUR_GITHUB_USERNAME>/<YOUR_REPOSITORY>` with the GitHub repository that contains this project:
+
+```bash
+cd /root
+git clone https://github.com/<YOUR_GITHUB_USERNAME>/<YOUR_REPOSITORY>.git netalertx-debian13-lxc
+cd /root/netalertx-debian13-lxc
+```
+
+Verify that the expected files are present:
+
+```bash
+ls -la
+ls -la scripts/
+```
+
+### 3. Run the installer
 
 ```bash
 chmod +x scripts/install-netalertx.sh
 sudo ./scripts/install-netalertx.sh
 ```
 
-Unattended:
+The installer performs the remaining OS package installation and configures NetAlertX, nginx, PHP-FPM, Python, systemd, persistent storage and `netalertxctl`.
+
+For unattended installation:
 
 ```bash
 sudo NETALERTX_ASSUME_YES=1 ./scripts/install-netalertx.sh
+```
+
+### 4. Verify the installation
+
+```bash
+netalertxctl status
+netalertxctl doctor
+netalertxctl version
+```
+
+Open:
+
+```text
+http://<LXC-IP>:20211
 ```
 
 ## Verify

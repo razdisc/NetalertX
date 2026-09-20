@@ -20,3 +20,10 @@
 ## v1.0.0 — First working script
 
 - Started from the upstream Debian/Proxmox installer and repaired the Debian 13 failures encountered in the homelab.
+
+## v3.0.1
+
+- Fixed systemd startup permissions for the Debian 13 LXC deployment.
+- Pre-create `/app/.VERSION` as `root:www-data` with group-write access.
+- Run compatibility symlink/runtime preparation as root while keeping the NetAlertX Python process under `www-data`.
+- Keep `/tmp`, `/data`, and `/app` compatibility mappings working after reboot/update.
