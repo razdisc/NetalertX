@@ -56,6 +56,14 @@ Default: **v26.9.0** (`a686a01` on the current GitHub release page). v26.9.0 is 
 ## Install
 
 On a fresh Debian 13 LXC:
+1. Clone repo first
+```bash
+# SSH (recommended)
+git clone git@github.com:razdisc/NetalertX.git
+
+# OR HTTPS with a GitHub Personal Access Token
+git clone https://github.com/razdisc/NetalertX.git
+```
 
 ```bash
 chmod +x scripts/install-netalertx.sh
