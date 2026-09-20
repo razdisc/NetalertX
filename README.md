@@ -87,7 +87,13 @@ Replace `<YOUR_GITHUB_USERNAME>/<YOUR_REPOSITORY>` with the GitHub repository th
 
 ```bash
 cd /root
-git clone https://github.com/<YOUR_GITHUB_USERNAME>/<YOUR_REPOSITORY>.git netalertx-debian13-lxc
+
+# SSH (recommended)
+git clone git@github.com:razdisc/NetalertX.git
+
+# OR HTTPS with a GitHub Personal Access Token
+git clone https://github.com/razdisc/NetalertX.git
+
 cd /root/netalertx-debian13-lxc
 ```
 
