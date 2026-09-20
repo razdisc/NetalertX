@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 REPO="https://github.com/netalertx/NetAlertX.git"
-CTL_VERSION=3.0.0
+CTL_VERSION=3.0.2
 APP_DIR=/app
 STATE_DIR=/var/lib/netalertx
 CONFIG_DIR="$STATE_DIR/config"
@@ -84,6 +84,12 @@ validate(){
   [[ $code == 401 ]] || return 1
   sudo -u www-data test -w "$CONFIG_DIR/app.conf" || return 1
   sudo -u www-data test -w "$DB_DIR/app.db" || return 1
+  sudo -u www-data env PATH="${VENV}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" PYTHONPATH=/app python3 -c 'import dateutil' >/dev/null 2>&1 || return 1
+  local pid service_path
+  pid=$(systemctl show -p MainPID --value netalertx)
+  [[ -n "$pid" && "$pid" != 0 ]] || return 1
+  service_path=$(tr '\0' '\n' < "/proc/${pid}/environ" | awk -F= '$1=="PATH"{print substr($0,6); exit}')
+  case ":${service_path}:" in *":${VENV}/bin:"*) ;; *) return 1 ;; esac
   return 0
 }
 
