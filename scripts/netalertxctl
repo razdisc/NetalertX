@@ -2,7 +2,7 @@
 set -Eeuo pipefail
 
 REPO="https://github.com/netalertx/NetAlertX.git"
-CTL_VERSION=3.0.2
+CTL_VERSION=3.0.3
 APP_DIR=/app
 STATE_DIR=/var/lib/netalertx
 CONFIG_DIR="$STATE_DIR/config"
