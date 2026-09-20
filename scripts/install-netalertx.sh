@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -Eeuo pipefail
 
-# NetAlertX Debian 13 / Proxmox LXC installer - v3.0.0
+# NetAlertX Debian 13 / Proxmox LXC installer - v3.0.2
 # Fresh-install script. Lifecycle operations are provided by netalertxctl.
 
 REPO="https://github.com/netalertx/NetAlertX.git"
@@ -36,7 +36,7 @@ source /etc/os-release
 if [[ "${NETALERTX_ASSUME_YES:-0}" != 1 ]]; then
   cat <<WARN
 ============================================================
-NetAlertX Debian 13 / Proxmox LXC installer v3.0.0
+NetAlertX Debian 13 / Proxmox LXC installer v3.0.2
 Target: ${NETALERTX_REF}
 
 FRESH INSTALL ONLY.
@@ -240,10 +240,16 @@ ln -sfn "$NGINX_CONF" "$NGINX_LINK"
 cat > "$START_SCRIPT" <<EOF_START
 #!/usr/bin/env bash
 set -Eeuo pipefail
+
+VENV="${VENV_DIR}"
+source "$VENV/bin/activate"
+export PATH="$VENV/bin:\$PATH"
+export VIRTUAL_ENV="$VENV"
 export PYTHONPATH=/app
 export PYTHONUNBUFFERED=1
+
 cd /app
-exec ${VENV_DIR}/bin/python /app/server/
+exec python server/
 EOF_START
 chmod 755 "$START_SCRIPT"
 
@@ -296,6 +302,8 @@ Wants=network-online.target
 Type=simple
 User=www-data
 Group=www-data
+Environment="VIRTUAL_ENV=/opt/netalertx/venv"
+Environment="PATH=/opt/netalertx/venv/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"
 WorkingDirectory=/app
 # The compatibility path setup must run as root; the application itself runs as www-data.
 ExecStartPre=+${PRESTART_SCRIPT}
@@ -314,7 +322,7 @@ cat > "$ETC_DIR/netalertx.env" <<EOF_STATE
 NETALERTX_REF='${NETALERTX_REF}'
 NETALERTX_COMMIT='${COMMIT}'
 NETALERTX_TAG='${TAG}'
-INSTALLER_VERSION='3.0.0'
+INSTALLER_VERSION='3.0.2'
 PORT='${PORT}'
 GRAPHQL_PORT='${GRAPHQL_PORT}'
 EOF_STATE
@@ -346,12 +354,16 @@ gql="$(curl -sS -o /tmp/netalertx-gql.json -w '%{http_code}' -X POST "http://127
 grep -q '"__typename"' /tmp/netalertx-gql.json || fail "Unexpected GraphQL response"
 sudo -u www-data test -w "$CONFIG_DIR/app.conf" || fail "app.conf not writable by www-data"
 sudo -u www-data test -w "$DB_DIR/app.db" || fail "app.db not writable by www-data"
+sudo -u www-data env PATH="${VENV_DIR}/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin" PYTHONPATH=/app python3 -c 'import dateutil; print(dateutil.__file__)' >/dev/null || fail "NetAlertX plugin Python environment cannot import dateutil"
+SERVICE_PID="$(systemctl show -p MainPID --value netalertx.service)"
+SERVICE_PATH="$(tr '\0' '\n' < "/proc/${SERVICE_PID}/environ" | awk -F= '$1=="PATH"{print substr($0,6); exit}')"
+case ":${SERVICE_PATH}:" in *":${VENV_DIR}/bin:"*) ;; *) fail "NetAlertX service PATH does not include ${VENV_DIR}/bin" ;; esac
 
 IP="$(ip -4 route get 1.1.1.1 2>/dev/null | awk '{for(i=1;i<=NF;i++) if($i=="src"){print $(i+1);exit}}')"
 IP="${IP:-$(hostname -I | awk '{print $1}')}"
 cat <<DONE
 ============================================================
-NetAlertX v3.0.0 installed
+NetAlertX v3.0.2 installed
 Release: ${NETALERTX_REF}
 Commit:  ${COMMIT}
 Web UI:  http://${IP}:${PORT}
