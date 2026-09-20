@@ -23,6 +23,7 @@ NGINX_CONF="$ETC_DIR/netalertx.conf"
 NGINX_LINK=/etc/nginx/conf.d/netalertx.conf
 SYSTEMD_UNIT=/etc/systemd/system/netalertx.service
 START_SCRIPT=/usr/local/lib/netalertx/start.sh
+PRESTART_SCRIPT=/usr/local/lib/netalertx/prestart.sh
 API_TOKEN_FILE="$ETC_DIR/api-token"
 CTL_PATH=/usr/local/bin/netalertxctl
 
@@ -149,6 +150,13 @@ chgrp -R www-data "$APP_DIR"
 chmod -R ug+rwX,o-rwx "$CONFIG_DIR" "$DB_DIR" "$RUNTIME_DIR"
 chmod 664 "$CONFIG_DIR/app.conf" "$DB_DIR/app.db"
 
+# NetAlertX writes /app/.VERSION while running as www-data. Pre-create it so
+# the application never needs write permission on the application directory.
+touch "$APP_DIR/.VERSION"
+chown root:www-data "$APP_DIR/.VERSION"
+chmod 664 "$APP_DIR/.VERSION"
+chmod 755 "$APP_DIR"
+
 cat > /etc/sudoers.d/netalertx-arpscan <<'EOF_SUDO'
 www-data ALL=(root) NOPASSWD: /usr/sbin/arp-scan
 EOF_SUDO
@@ -239,10 +247,49 @@ exec ${VENV_DIR}/bin/python /app/server/
 EOF_START
 chmod 755 "$START_SCRIPT"
 
-cat > "$SYSTEMD_UNIT" <<'EOF_SERVICE'
+cat > "$PRESTART_SCRIPT" <<'EOF_PRESTART'
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+STATE_DIR=/var/lib/netalertx
+APP_DIR=/app
+
+mkdir -p "$STATE_DIR/runtime/api" "$STATE_DIR/runtime/log/plugins" /data
+
+# These paths may be cleared on boot (/tmp) or recreated by updates.
+ln -sfn "$STATE_DIR/runtime/api" /tmp/api
+ln -sfn "$STATE_DIR/runtime/log" /tmp/log
+ln -sfn "$STATE_DIR/config" /data/config
+ln -sfn "$STATE_DIR/db" /data/db
+ln -sfn /tmp/api /data/api
+ln -sfn /tmp/log /data/log
+
+# Compatibility paths expected by NetAlertX.
+rm -f "$APP_DIR/api" "$APP_DIR/log" "$APP_DIR/config" "$APP_DIR/db"
+ln -s /tmp/api "$APP_DIR/api"
+ln -s /tmp/log "$APP_DIR/log"
+ln -s "$STATE_DIR/config" "$APP_DIR/config"
+ln -s "$STATE_DIR/db" "$APP_DIR/db"
+
+# Persistent runtime files.
+touch "$STATE_DIR/runtime/log/app.log" "$STATE_DIR/runtime/log/execution_queue.log" \
+      "$STATE_DIR/runtime/log/app_front.log" "$STATE_DIR/runtime/log/app.php_errors.log" \
+      "$STATE_DIR/runtime/log/stderr.log" "$STATE_DIR/runtime/log/stdout.log" \
+      "$STATE_DIR/runtime/log/db_is_locked.log" "$STATE_DIR/runtime/api/user_notifications.json"
+
+chown -R www-data:www-data "$STATE_DIR/config" "$STATE_DIR/db" "$STATE_DIR/runtime"
+
+# NetAlertX writes this file during startup while running as www-data.
+touch "$APP_DIR/.VERSION"
+chown root:www-data "$APP_DIR/.VERSION"
+chmod 664 "$APP_DIR/.VERSION"
+EOF_PRESTART
+chmod 755 "$PRESTART_SCRIPT"
+
+cat > "$SYSTEMD_UNIT" <<EOF_SERVICE
 [Unit]
 Description=NetAlertX
-After=network-online.target php8.4-fpm.service nginx.service
+After=network-online.target php${PHP_VERSION}-fpm.service nginx.service
 Wants=network-online.target
 
 [Service]
@@ -250,9 +297,10 @@ Type=simple
 User=www-data
 Group=www-data
 WorkingDirectory=/app
-ExecStartPre=/bin/bash -c 'mkdir -p /var/lib/netalertx/runtime/api /var/lib/netalertx/runtime/log/plugins; ln -sfn /var/lib/netalertx/runtime/api /tmp/api; ln -sfn /var/lib/netalertx/runtime/log /tmp/log; ln -sfn /var/lib/netalertx/config /data/config; ln -sfn /var/lib/netalertx/db /data/db; ln -sfn /tmp/api /data/api; ln -sfn /tmp/log /data/log; rm -f /app/api /app/log /app/config /app/db; ln -s /tmp/api /app/api; ln -s /tmp/log /app/log; ln -s /var/lib/netalertx/config /app/config; ln -s /var/lib/netalertx/db /app/db; touch /var/lib/netalertx/runtime/log/app.log /var/lib/netalertx/runtime/log/execution_queue.log /var/lib/netalertx/runtime/log/app_front.log /var/lib/netalertx/runtime/log/app.php_errors.log /var/lib/netalertx/runtime/log/stderr.log /var/lib/netalertx/runtime/log/stdout.log /var/lib/netalertx/runtime/log/db_is_locked.log /var/lib/netalertx/runtime/api/user_notifications.json; chown -R www-data:www-data /var/lib/netalertx/config /var/lib/netalertx/db /var/lib/netalertx/runtime'
+# The compatibility path setup must run as root; the application itself runs as www-data.
+ExecStartPre=+${PRESTART_SCRIPT}
 ExecStartPre=/bin/bash -c 'test -w /data/config/app.conf && test -w /data/db/app.db'
-ExecStart=/usr/local/lib/netalertx/start.sh
+ExecStart=${START_SCRIPT}
 Restart=on-failure
 RestartSec=5
 StandardOutput=journal

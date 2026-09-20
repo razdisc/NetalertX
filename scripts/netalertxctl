@@ -48,6 +48,10 @@ ensure_links(){
   ln -s "$CONFIG_DIR" "$APP_DIR/config"
   ln -s "$DB_DIR" "$APP_DIR/db"
   chown -R www-data:www-data "$CONFIG_DIR" "$DB_DIR" "$RUNTIME_DIR"
+  mkdir -p "$APP_DIR"
+  touch "$APP_DIR/.VERSION"
+  chown root:www-data "$APP_DIR/.VERSION"
+  chmod 664 "$APP_DIR/.VERSION"
 }
 
 backup(){
