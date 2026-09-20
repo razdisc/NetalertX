@@ -1,0 +1,199 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+REPO="https://github.com/netalertx/NetAlertX.git"
+CTL_VERSION=3.0.0
+APP_DIR=/app
+STATE_DIR=/var/lib/netalertx
+CONFIG_DIR="$STATE_DIR/config"
+DB_DIR="$STATE_DIR/db"
+RUNTIME_DIR="$STATE_DIR/runtime"
+BACKUP_ROOT=/var/backups/netalertx
+ETC_DIR=/etc/netalertx
+ENV_FILE="$ETC_DIR/netalertx.env"
+VENV=/opt/netalertx/venv
+NGINX_CONF="$ETC_DIR/netalertx.conf"
+NGINX_LINK=/etc/nginx/conf.d/netalertx.conf
+WEB_UI=/var/www/html/netalertx
+UNIT=/etc/systemd/system/netalertx.service
+START=/usr/local/lib/netalertx/start.sh
+TOKEN_FILE="$ETC_DIR/api-token"
+
+[[ $EUID -eq 0 ]] || { echo "Run as root." >&2; exit 1; }
+source "$ENV_FILE" 2>/dev/null || true
+PORT="${PORT:-20211}"
+GRAPHQL_PORT="${GRAPHQL_PORT:-20212}"
+NETALERTX_REF="${NETALERTX_REF:-v26.9.0}"
+mkdir -p "$BACKUP_ROOT" "$ETC_DIR"
+exec 9>/run/lock/netalertxctl.lock
+flock -n 9 || { echo "Another netalertxctl operation is running." >&2; exit 1; }
+
+cur_ref(){ [[ -d $APP_DIR/.git ]] && (git -C "$APP_DIR" describe --tags --exact-match 2>/dev/null || git -C "$APP_DIR" rev-parse --short HEAD) || echo not-installed; }
+cur_commit(){ [[ -d $APP_DIR/.git ]] && git -C "$APP_DIR" rev-parse HEAD || echo not-installed; }
+confirm(){ [[ "${NETALERTX_ASSUME_YES:-0}" == 1 ]] && return; read -r -p "$1 Type YES to continue: " a; [[ "${a^^}" == YES ]]; }
+
+ensure_links(){
+  mkdir -p "$CONFIG_DIR" "$DB_DIR" "$RUNTIME_DIR/api" "$RUNTIME_DIR/log/plugins" /data
+  touch "$RUNTIME_DIR/log"/{app.log,execution_queue.log,app_front.log,app.php_errors.log,stderr.log,stdout.log,db_is_locked.log}
+  touch "$RUNTIME_DIR/api/user_notifications.json"
+  ln -sfn "$RUNTIME_DIR/api" /tmp/api
+  ln -sfn "$RUNTIME_DIR/log" /tmp/log
+  ln -sfn "$CONFIG_DIR" /data/config
+  ln -sfn "$DB_DIR" /data/db
+  ln -sfn /tmp/api /data/api
+  ln -sfn /tmp/log /data/log
+  rm -f "$APP_DIR/api" "$APP_DIR/log" "$APP_DIR/config" "$APP_DIR/db"
+  ln -s /tmp/api "$APP_DIR/api"
+  ln -s /tmp/log "$APP_DIR/log"
+  ln -s "$CONFIG_DIR" "$APP_DIR/config"
+  ln -s "$DB_DIR" "$APP_DIR/db"
+  chown -R www-data:www-data "$CONFIG_DIR" "$DB_DIR" "$RUNTIME_DIR"
+}
+
+backup(){
+  local why="${1:-manual}" stamp b active=0
+  stamp=$(date +%Y%m%d_%H%M%S)
+  b="$BACKUP_ROOT/${stamp}-${why}"
+  mkdir -p "$b"
+  if systemctl is-active --quiet netalertx; then active=1; systemctl stop netalertx; fi
+  cp -a "$CONFIG_DIR" "$b/config"
+  cp -a "$DB_DIR" "$b/db"
+  [[ -f $TOKEN_FILE ]] && cp -a "$TOKEN_FILE" "$b/api-token"
+  [[ -f $NGINX_CONF ]] && cp -a "$NGINX_CONF" "$b/netalertx.conf"
+  [[ -f $UNIT ]] && cp -a "$UNIT" "$b/netalertx.service"
+  [[ -f $START ]] && cp -a "$START" "$b/start.sh"
+  [[ -f $ENV_FILE ]] && cp -a "$ENV_FILE" "$b/netalertx.env"
+  [[ -d $APP_DIR ]] && cp -a "$APP_DIR" "$b/app"
+  [[ -d $VENV ]] && cp -a "$VENV" "$b/venv"
+  printf 'controller=%s\ncreated=%s\nref=%s\ncommit=%s\n' "$CTL_VERSION" "$(date --iso-8601=seconds)" "$(cur_ref)" "$(cur_commit)" > "$b/metadata.txt"
+  ((active)) && systemctl start netalertx
+  echo "$b"
+}
+
+validate(){
+  source "$ENV_FILE" 2>/dev/null || true
+  systemctl is-active --quiet netalertx || return 1
+  systemctl is-active --quiet nginx || return 1
+  nginx -t >/dev/null || return 1
+  curl -fsS -o /dev/null "http://127.0.0.1:${GRAPHQL_PORT}/docs" || return 1
+  local code; code=$(curl -sS -o /dev/null -w '%{http_code}' "http://127.0.0.1:${PORT}/server/sse/state")
+  [[ $code == 401 ]] || return 1
+  sudo -u www-data test -w "$CONFIG_DIR/app.conf" || return 1
+  sudo -u www-data test -w "$DB_DIR/app.db" || return 1
+  return 0
+}
+
+clone_target(){
+  local ref=$1 dest=$2
+  git clone --depth 1 --branch "$ref" "$REPO" "$dest"
+  [[ -d $dest/server && -d $dest/front && -f $dest/requirements.txt && -f $dest/back/app.conf && -f $dest/back/app.db ]]
+}
+
+make_venv(){
+  local src=$1 dest=$2
+  python3 -m venv "$dest"
+  "$dest/bin/python" -m pip install --upgrade pip wheel setuptools
+  "$dest/bin/python" -m pip install -r "$src/requirements.txt"
+}
+
+update(){
+  local target="${1:-$NETALERTX_REF}"
+  [[ -d $APP_DIR/.git ]] || { echo "Not installed; run installer." >&2; return 1; }
+  confirm "Update $(cur_ref) -> ${target}?" || exit 1
+  local b; b=$(backup update); echo "Backup: $b"
+  local stamp stage newv oldapp oldv
+  stamp=$(date +%Y%m%d_%H%M%S)
+  stage="$STATE_DIR/staging/app-$stamp"; newv="$STATE_DIR/staging/venv-$stamp"
+  oldapp="$STATE_DIR/staging/old-app-$stamp"; oldv="$STATE_DIR/staging/old-venv-$stamp"
+  mkdir -p "$STATE_DIR/staging"
+  rm -rf "$stage" "$newv" "$oldapp" "$oldv"
+  clone_target "$target" "$stage" || { rm -rf "$stage"; echo "Target layout check failed." >&2; exit 1; }
+  make_venv "$stage" "$newv"
+  systemctl stop netalertx
+  mv "$APP_DIR" "$oldapp"
+  mv "$VENV" "$oldv"
+  mv "$stage" "$APP_DIR"
+  mv "$newv" "$VENV"
+  ensure_links
+  systemctl start netalertx
+  if validate; then
+    local c t; c=$(git -C "$APP_DIR" rev-parse HEAD); t=$(git -C "$APP_DIR" describe --tags --exact-match 2>/dev/null || true)
+    cat > "$ENV_FILE" <<EOF_STATE
+NETALERTX_REF='${t:-$target}'
+NETALERTX_COMMIT='${c}'
+NETALERTX_TAG='${t}'
+INSTALLER_VERSION='${CTL_VERSION}'
+PORT='${PORT}'
+GRAPHQL_PORT='${GRAPHQL_PORT}'
+EOF_STATE
+    rm -rf "$oldapp" "$oldv"
+    echo "Update successful: ${t:-$target} ($c)"
+  else
+    echo "Validation failed; restoring previous installation." >&2
+    systemctl stop netalertx || true
+    rm -rf "$APP_DIR" "$VENV"
+    mv "$oldapp" "$APP_DIR"; mv "$oldv" "$VENV"
+    rm -rf "$CONFIG_DIR" "$DB_DIR"
+    cp -a "$b/config" "$CONFIG_DIR"; cp -a "$b/db" "$DB_DIR"
+    [[ -f $b/api-token ]] && cp -a "$b/api-token" "$TOKEN_FILE"
+    [[ -f $b/netalertx.env ]] && cp -a "$b/netalertx.env" "$ENV_FILE"
+    ensure_links
+    systemctl start netalertx || true
+    echo "Rollback to pre-update state completed. Backup: $b" >&2
+    exit 1
+  fi
+}
+
+rollback(){
+  local b="${1:-}"
+  [[ -d $b/app && -d $b/venv && -d $b/config && -d $b/db ]] || { echo "Incomplete backup: $b" >&2; exit 1; }
+  confirm "Rollback using $b?" || exit 1
+  local safety; safety=$(backup pre-rollback); echo "Safety backup: $safety"
+  systemctl stop netalertx || true
+  rm -rf "$APP_DIR" "$VENV" "$CONFIG_DIR" "$DB_DIR"
+  cp -a "$b/app" "$APP_DIR"; cp -a "$b/venv" "$VENV"; cp -a "$b/config" "$CONFIG_DIR"; cp -a "$b/db" "$DB_DIR"
+  [[ -f $b/api-token ]] && cp -a "$b/api-token" "$TOKEN_FILE"
+  [[ -f $b/netalertx.env ]] && cp -a "$b/netalertx.env" "$ENV_FILE"
+  ensure_links
+  systemctl start netalertx
+  validate || { echo "Rollback validation failed; safety backup: $safety" >&2; exit 1; }
+  echo "Rollback successful."
+}
+
+remove_app(){
+  local purge=0; [[ "${1:-}" == --purge ]] && purge=1
+  confirm "Remove NetAlertX?" || exit 1
+  systemctl disable --now netalertx 2>/dev/null || true
+  rm -f "$UNIT" "$NGINX_LINK" "$WEB_UI" /tmp/api /tmp/log /data/api /data/log /data/config /data/db /etc/sudoers.d/netalertx-arpscan "$CTL_PATH" "/etc/netalertx/netalertx.env" "/etc/netalertx/netalertx.conf"
+  rm -rf "$APP_DIR" "$VENV" /usr/local/lib/netalertx
+  if ((purge)); then rm -rf "$STATE_DIR" "$BACKUP_ROOT" "$ETC_DIR"; fi
+  systemctl daemon-reload
+  nginx -t && systemctl reload nginx || true
+  echo "NetAlertX removed. Persistent state ${purge:+purged.}${purge:-kept under $STATE_DIR}"
+}
+
+case "${1:-help}" in
+  status)
+    echo "controller=$CTL_VERSION"; echo "ref=$(cur_ref)"; echo "commit=$(cur_commit)"; echo "target=$NETALERTX_REF"; systemctl --no-pager --full status netalertx || true ;;
+  version) echo "controller=$CTL_VERSION"; echo "ref=$(cur_ref)"; echo "commit=$(cur_commit)"; echo "target=$NETALERTX_REF" ;;
+  doctor) validate && { echo "NetAlertX health: OK"; } || { echo "NetAlertX health: FAILED"; exit 1; } ;;
+  backup) backup manual ;;
+  update) update "${2:-}" ;;
+  reinstall) update "${2:-$NETALERTX_REF}" ;;
+  rollback) rollback "${2:-}" ;;
+  remove) remove_app "${2:-}" ;;
+  *) cat <<'USAGE'
+NetAlertX controller v3
+
+Commands:
+  netalertxctl status
+  netalertxctl version
+  netalertxctl doctor
+  netalertxctl backup
+  netalertxctl update <release>
+  netalertxctl reinstall <release>
+  netalertxctl rollback <backup-directory>
+  netalertxctl remove [--purge]
+USAGE
+    ;;
+esac
