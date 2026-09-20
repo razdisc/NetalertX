@@ -60,3 +60,11 @@ systemctl status netalertx --no-pager
 journalctl -u netalertx -n 100 --no-pager
 netalertxctl doctor
 ```
+
+### Service starts and immediately exits with `PermissionError: /app/.VERSION`
+
+The NetAlertX backend writes `/app/.VERSION` during startup. In this deployment the Python process runs as `www-data`, so the installer must pre-create that file as `root:www-data` with group-write permission. The systemd pre-start compatibility mapping must also run as root; otherwise links under `/tmp`, `/data`, and `/app` fail with `Operation not permitted` or `Permission denied`.
+
+The final installer creates a root-owned, group-writable `/app/.VERSION` and uses a privileged (`+`) systemd `ExecStartPre` wrapper for the compatibility mappings.
+
+For an existing broken installation, stop the service, repair the `.VERSION` file and compatibility links as root, then reload/restart the service.
