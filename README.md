@@ -80,6 +80,66 @@ cat /etc/os-release
 ```
 
 This project targets **Debian 13 (Trixie)**.
+1. Create a deploy key on CT108
+apt update
+apt install -y git openssh-client
+
+mkdir -p /root/.ssh
+chmod 700 /root/.ssh
+
+ssh-keygen -t ed25519 \
+  -f /root/.ssh/netalertx_github \
+  -C "netalertx-lxc"
+
+Press Enter for the passphrase if this key is only for automated cloning.
+
+Show the public key:
+
+cat /root/.ssh/netalertx_github.pub
+
+Copy the entire line.
+
+2. Add it to your GitHub repository
+
+Open:
+
+https://github.com/razdisc/NetalertX/settings/keys
+
+Then:
+
+Deploy keys → Add deploy key
+
+Use something like:
+
+Title: NetAlertX CT108
+
+Paste the public key.
+
+Do not enable "Allow write access".
+
+That means CT108 can clone/pull the repo but cannot push changes to GitHub.
+
+3. Configure SSH on CT108
+cat > /root/.ssh/config <<'EOF'
+Host github-netalertx
+    HostName github.com
+    User git
+    IdentityFile /root/.ssh/netalertx_github
+    IdentitiesOnly yes
+EOF
+
+chmod 600 /root/.ssh/config
+chmod 600 /root/.ssh/netalertx_github
+
+Test it:
+
+ssh -T git@github-netalertx
+
+GitHub may respond with something like:
+
+Hi! You've successfully authenticated, but GitHub does not provide shell access.
+
+That's successful authentication.
 
 ### 2. Clone this repository
 
